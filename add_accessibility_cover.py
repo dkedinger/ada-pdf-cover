@@ -679,7 +679,7 @@ def main():
                       f"[dim]— update cover on already-processed PDFs "
                       f"({len(pairs)} found)[/dim]")
         console.print("  [bold yellow][3][/bold yellow]  Configure      "
-                      "[dim]— update org name, contact details, or logo URL[/dim]")
+                      "[dim]— update org name, contact details, colors, or logo URL[/dim]")
         console.print("  [bold red][0][/bold red]  Exit\n")
 
         choice = Prompt.ask("  Choice", choices=["0","1","2","3","4"], default="1")
