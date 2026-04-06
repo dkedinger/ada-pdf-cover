@@ -681,9 +681,11 @@ def main():
                       f"({len(pairs)} found)[/dim]")
         console.print("  [bold yellow][3][/bold yellow]  Configure      "
                       "[dim]— update org name, contact details, colors, or logo URL[/dim]")
+        console.print("  [bold blue][5][/bold blue]  Change Folder  "
+                      "[dim]— switch to a different PDF directory[/dim]")
         console.print("  [bold red][0][/bold red]  Exit\n")
 
-        choice = Prompt.ask("  Choice", choices=["0","1","2","3","4"], default="1")
+        choice = Prompt.ask("  Choice", choices=["0","1","2","3","4","5"], default="1")
         console.print()
 
         if choice == "0":
@@ -695,6 +697,16 @@ def main():
             cfg = configure_settings(cfg)
             if cfg["logo_url"] != old_url:
                 logo_bytes = load_logo_bytes(cfg["logo_url"])
+
+        elif choice == "5":
+            raw = Prompt.ask("  [bold]New path to PDF folder[/bold]",
+                             default=str(root))
+            new_root = Path(raw.strip()).expanduser().resolve()
+            if new_root.is_dir():
+                root = new_root
+                console.print(f"  [green]✓ Switched to:[/green] [cyan]{root}[/cyan]\n")
+            else:
+                console.print(f"  [red]✗ Not a valid directory:[/red] {new_root}\n")
 
         elif choice in ("1", "2"):
             dry_run = (choice == "1")
