@@ -24,9 +24,8 @@ env/
 Thumbs.db
 
 # Tool output
-old pdfs/
-encrypted_pdfs/
-failed_pdfs/
+_old_pdfs/
+_encrypted_pdfs/
+_failed_pdfs/
 accessibility_log*.txt
 replace_covers_log.txt
-led_logo_cached.svg

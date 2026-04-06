@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 add_accessibility_cover.py
 ──────────────────────────────────────────────────────────────────────────────
@@ -7,11 +8,11 @@ Adds a branded accessibility cover page to every PDF in a folder tree.
 • Auto-installs all required dependencies on first run
 • Interactive menu — configure, dry-run, then commit
 • Batch processing with live progress bar + per-batch status
-• Embeds the LED logo (reads LED_logo_2025.svg alongside the script,
-  falls back to downloading from opportunitylouisiana.gov)
-• Originals archived to  old pdfs/    (same subfolder structure)
-• Encrypted PDFs copied to  encrypted_pdfs/
-• Unreadable / error PDFs copied to  failed_pdfs/
+• Embeds the logo (reads logo.svg alongside the script,
+  falls back to downloading from url if provided, or continues without logo if neither is available)
+• Originals archived to  _old_pdfs/    (same subfolder structure)
+• Encrypted PDFs copied to  _encrypted_pdfs/
+• Unreadable / error PDFs copied to  _failed_pdfs/
 ──────────────────────────────────────────────────────────────────────────────
 """
 
@@ -50,9 +51,7 @@ _ensure_deps()
 # STEP 1 — Imports
 # ═══════════════════════════════════════════════════════════════════════════════
 
-from __future__ import annotations
-
-import io, os, shutil, time, textwrap
+import io, shutil, time, textwrap
 from pathlib import Path
 
 import requests
@@ -81,8 +80,8 @@ from rich.rule import Rule
 # CONSTANTS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-DEFAULT_HEADER_COLOR = "#043659"
-DEFAULT_TEXT_COLOR   = "#043659"
+DEFAULT_HEADER_COLOR = "#000000"
+DEFAULT_TEXT_COLOR   = "#000000"
 WHITE      = (1.0, 1.0, 1.0)
 LIGHT_BG   = (0.95, 0.97, 0.99)
 
@@ -94,14 +93,12 @@ def hex_to_rgb(hex_str: str) -> tuple:
         raise ValueError(f"Invalid hex color: {hex_str}")
     return (int(h[0:2], 16) / 255, int(h[2:4], 16) / 255, int(h[4:6], 16) / 255)
 
-ARCHIVE_DIR   = "old pdfs"
-ENCRYPTED_DIR = "encrypted_pdfs"
-FAILED_DIR    = "failed_pdfs"
+ARCHIVE_DIR   = "_old_pdfs"
+ENCRYPTED_DIR = "_encrypted_pdfs"
+FAILED_DIR    = "_failed_pdfs"
 BATCH_SIZE    = 50
 
-DEFAULT_LOGO_URL  = "https://www.opportunitylouisiana.gov/images/LED_logo_2025.svg"
-LOCAL_LOGO_NAME   = "LED_logo_2025.svg"
-LOGO_CACHE_NAME   = "led_logo_cached.svg"
+LOCAL_LOGO_NAME   = "logo.svg"
 
 console = Console()
 
@@ -111,39 +108,37 @@ console = Console()
 
 def load_logo_bytes(logo_url: str) -> bytes | None:
     """
-    Priority order:
-      1. LED_logo_2025.svg alongside this script
-      2. led_logo_cached.svg (previously downloaded)
-      3. Download from logo_url and cache it
+    If logo_url is provided, download from the URL.
+    Otherwise look for logo.svg next to the script.
+    If neither is available, return None (no logo).
     """
     script_dir = Path(__file__).parent
 
-    # 1. Local file next to script
+    # 1. If a URL was provided, download it
+    if logo_url:
+        try:
+            console.print(f"  [dim]Downloading logo → {logo_url}[/dim]")
+            r = requests.get(logo_url, timeout=12)
+            r.raise_for_status()
+            console.print("  [dim green]✓ Logo downloaded.[/dim green]")
+            return r.content
+        except Exception as exc:
+            console.print(
+                f"  [yellow]⚠ Logo download failed ({exc}).[/yellow]"
+            )
+            # Fall through to local file check
+
+    # 2. Look for logo.svg next to the script
     local = script_dir / LOCAL_LOGO_NAME
     if local.exists():
         console.print(f"  [dim]Logo loaded from {local.name}[/dim]")
         return local.read_bytes()
 
-    # 2. Cached download
-    cache = script_dir / LOGO_CACHE_NAME
-    if cache.exists():
-        console.print(f"  [dim]Logo loaded from cache.[/dim]")
-        return cache.read_bytes()
-
-    # 3. Download
-    try:
-        console.print(f"  [dim]Downloading logo → {logo_url}[/dim]")
-        r = requests.get(logo_url, timeout=12)
-        r.raise_for_status()
-        cache.write_bytes(r.content)
-        console.print("  [dim green]✓ Logo downloaded and cached.[/dim green]")
-        return r.content
-    except Exception as exc:
-        console.print(
-            f"  [yellow]⚠ Logo unavailable ({exc}). "
-            f"Continuing without logo.[/yellow]"
-        )
-        return None
+    if logo_url:
+        console.print("  [yellow]⚠ No local logo.svg fallback — continuing without logo.[/yellow]")
+    else:
+        console.print("  [dim]No logo URL set and no logo.svg found — continuing without logo.[/dim]")
+    return None
 
 
 def svg_to_drawing(svg_bytes: bytes, max_w: float, max_h: float,
@@ -339,7 +334,7 @@ def process_one(pdf_path: Path, root: Path, cover: PdfReader, dry_run: bool) -> 
 
         if reader.is_encrypted:
             if not dry_run:
-                dest = _copy_to(pdf_path, root, ENCRYPTED_DIR)
+                _copy_to(pdf_path, root, ENCRYPTED_DIR)
             r["status"] = "encrypted"
             r["msg"]    = (f"Encrypted — copied to {ENCRYPTED_DIR}/"
                            if not dry_run else "Encrypted — would copy to encrypted_pdfs/")
@@ -400,8 +395,8 @@ def run_batch_processing(pdfs: list, root: Path, cover: PdfReader,
 
     with Progress(
         SpinnerColumn(),
-        TextColumn("[bold #043659]{task.description}"),
-        BarColumn(bar_width=36, style="#043659", complete_style="green"),
+        TextColumn("[bold #000000]{task.description}"),
+        BarColumn(bar_width=36, style="#000000", complete_style="green"),
         MofNCompleteColumn(),
         TimeElapsedColumn(),
         console=console,
@@ -440,7 +435,7 @@ def run_batch_processing(pdfs: list, root: Path, cover: PdfReader,
 
 def collect_archived_pdfs(root: Path) -> list:
     """
-    Return (original, main_path) pairs for every PDF in old pdfs/ that still
+    Return (original, main_path) pairs for every PDF in _old_pdfs/ that still
     has a live counterpart — these are ready for cover replacement.
     """
     archive_root = root / ARCHIVE_DIR
@@ -498,8 +493,8 @@ def run_replace_processing(pairs: list, cover: PdfReader,
 
     with Progress(
         SpinnerColumn(),
-        TextColumn("[bold #043659]{task.description}"),
-        BarColumn(bar_width=36, style="#043659", complete_style="green"),
+        TextColumn("[bold #000000]{task.description}"),
+        BarColumn(bar_width=36, style="#000000", complete_style="green"),
         MofNCompleteColumn(),
         TimeElapsedColumn(),
         console=console,
@@ -535,11 +530,12 @@ def print_banner():
     console.print()
     console.print(Panel(
         Text.assemble(
-            ("  LED Accessibility Cover Page Tool\n", "bold white"),
-            ("  Louisiana Economic Development  •  opportunitylouisiana.gov",
-             "dim white"),
+            ("  Accessibility Cover Page Tool\n\n", "bold white"),
+            ("  Follow the steps below to programmatically\n", "bold white"),
+            ("  add an accessibility cover page to every\n", "bold white"),
+            ("  PDF in a folder tree recursively.\n", "bold white"),
         ),
-        style="bold on #043659",
+        style="bold on #000000",
         padding=(1, 4),
         expand=False,
     ))
@@ -548,14 +544,14 @@ def print_banner():
 
 def print_config_table(cfg: dict):
     t = Table(box=box.ROUNDED, show_header=False,
-              border_style="dim #043659", padding=(0, 2), expand=False)
-    t.add_column("", style="bold #043659", width=18)
+              border_style="dim #000000", padding=(0, 2), expand=False)
+    t.add_column("", style="bold #000000", width=18)
     t.add_column("", style="white")
     t.add_row("Organisation",  cfg["org_name"])
     t.add_row("Contact",       cfg["contact_name"])
     t.add_row("Email",         cfg["contact_email"])
     t.add_row("Phone",         cfg["contact_phone"])
-    t.add_row("Logo URL",      cfg["logo_url"])
+    t.add_row("Logo",          cfg["logo_url"] or "[dim]local logo.svg (if present)[/dim]")
     t.add_row("Header color", f"[{cfg['header_color']}]██[/{cfg['header_color']}] {cfg['header_color']}")
     t.add_row("Text color",   f"[{cfg['text_color']}]██[/{cfg['text_color']}] {cfg['text_color']}")
     console.print(t)
@@ -573,8 +569,8 @@ def print_dir_stats(root: Path, pdfs: list):
 def print_summary(totals: dict, root: Path, dry_run: bool, elapsed: float):
     console.print()
     console.print(Rule(
-        f"[bold #043659]{'Dry Run' if dry_run else 'Full Run'}"
-        f" — Complete[/bold #043659]"
+        f"[bold #000000]{'Dry Run' if dry_run else 'Full Run'}"
+        f" — Complete[/bold #000000]"
     ))
 
     t = Table(box=box.SIMPLE, show_header=False, padding=(0, 4))
@@ -623,14 +619,17 @@ def print_summary(totals: dict, root: Path, dry_run: bool, elapsed: float):
 
 def configure_settings(cfg: dict) -> dict:
     console.print(
-        "\n[bold #043659]Configure[/bold #043659]  "
+        "\n[bold #000000]Configure[/bold #000000]  "
         "[dim]Press Enter to keep the current value.[/dim]\n"
     )
     cfg["org_name"]      = Prompt.ask("  Organisation name",   default=cfg["org_name"])
     cfg["contact_name"]  = Prompt.ask("  Contact name / dept", default=cfg["contact_name"])
     cfg["contact_email"] = Prompt.ask("  Contact email",        default=cfg["contact_email"])
     cfg["contact_phone"] = Prompt.ask("  Contact phone",        default=cfg["contact_phone"])
-    cfg["logo_url"]      = Prompt.ask("  Logo SVG URL",         default=cfg["logo_url"])
+    cfg["logo_url"]      = Prompt.ask(
+        "  Logo SVG URL [dim](blank = use logo.svg from script folder)[/dim]",
+        default=cfg["logo_url"],
+    )
     cfg["header_color"]  = Prompt.ask("  Header color (hex)",   default=cfg["header_color"])
     cfg["text_color"]    = Prompt.ask("  Text color (hex)",     default=cfg["text_color"])
     console.print()
@@ -651,11 +650,11 @@ def main():
         sys.exit(1)
 
     cfg = {
-        "org_name":      "Louisiana Economic Development",
-        "contact_name":  "Office of the Secretary",
-        "contact_email": "LEDPublicRecords@la.gov",
-        "contact_phone": "(225) 342-3000",
-        "logo_url":      DEFAULT_LOGO_URL,
+        "org_name":      "XYZ State Agency",
+        "contact_name":  "Accessibility Coordinator",
+        "contact_email": "accessibility@state.gov",
+        "contact_phone": "(555) 555-5555",
+        "logo_url":      "",
         "header_color":  DEFAULT_HEADER_COLOR,
         "text_color":    DEFAULT_TEXT_COLOR,
     }
@@ -719,7 +718,7 @@ def main():
                     continue
 
             mode = "Dry Run" if dry_run else "Full Run"
-            console.print(f"  [bold #043659]Starting {mode}…[/bold #043659]\n")
+            console.print(f"  [bold #000000]Starting {mode}…[/bold #000000]\n")
 
             with console.status("[dim]Building cover page…[/dim]", spinner="dots"):
                 cover = build_cover_page(cfg, logo_bytes)
@@ -758,13 +757,13 @@ def main():
                 cover = build_cover_page(cfg, logo_bytes)
 
             # Dry run preview
-            console.print("  [bold #043659]Starting Dry Run…[/bold #043659]\n")
+            console.print("  [bold #000000]Starting Dry Run…[/bold #000000]\n")
             start  = time.time()
             totals = run_replace_processing(pairs, cover, dry_run=True)
             elapsed = time.time() - start
 
             console.print()
-            console.print(Rule("[bold #043659]Replace Preview — Complete[/bold #043659]"))
+            console.print(Rule("[bold #000000]Replace Preview — Complete[/bold #000000]"))
             t = Table(box=box.SIMPLE, show_header=False, padding=(0, 4))
             t.add_column("", style="bold", min_width=20)
             t.add_column("")
@@ -785,13 +784,13 @@ def main():
                 continue
 
             # Live run
-            console.print("\n  [bold #043659]Replacing covers…[/bold #043659]\n")
+            console.print("\n  [bold #000000]Replacing covers…[/bold #000000]\n")
             start   = time.time()
             totals  = run_replace_processing(pairs, cover, dry_run=False)
             elapsed = time.time() - start
 
             console.print()
-            console.print(Rule("[bold #043659]Replace Covers — Complete[/bold #043659]"))
+            console.print(Rule("[bold #000000]Replace Covers — Complete[/bold #000000]"))
             t = Table(box=box.SIMPLE, show_header=False, padding=(0, 4))
             t.add_column("", style="bold", min_width=20)
             t.add_column("")
