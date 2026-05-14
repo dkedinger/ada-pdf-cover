@@ -192,7 +192,7 @@ def svg_to_drawing(svg_bytes: bytes, max_w: float, max_h: float,
 # COVER-PAGE BUILDER
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def build_cover_page(cfg: dict, logo_bytes) -> PdfReader:
+def build_cover_page(cfg: dict, logo_bytes, filename: str = "") -> PdfReader:
     buf  = io.BytesIO()
     W, H = letter          # 612 × 792 pt
     c    = rl_canvas.Canvas(buf, pagesize=letter)
@@ -251,8 +251,22 @@ def build_cover_page(cfg: dict, logo_bytes) -> PdfReader:
         c.drawString(margin_l, y, label)
         return y - 10                   # tight gap BELOW heading
 
-    # ── Section 1: About ──────────────────────────────────────────────────────
+    # ── Filename ──────────────────────────────────────────────────────────────
     y = H - banner_h - 22
+    if filename:
+        display = filename
+        if len(display) > 80:
+            display = display[:77] + "..."
+        c.setFillColorRGB(*text_rgb)
+        c.setFont("Helvetica-Bold", 10)
+        label = "Document: "
+        c.drawString(margin_l, y, label)
+        label_w = c.stringWidth(label, "Helvetica-Bold", 10)
+        c.setFont("Helvetica", 10)
+        c.drawString(margin_l + label_w, y, display)
+        y -= 8
+
+    # ── Section 1: About ──────────────────────────────────────────────────────
     y = section_head("About This Document", y)
     y -= 6                              # extra spacing after heading
 
@@ -342,7 +356,8 @@ def _copy_to(pdf_path: Path, root: Path, dest_folder: str) -> Path:
     return dest
 
 
-def process_one(pdf_path: Path, root: Path, cover: PdfReader, dry_run: bool) -> dict:
+def process_one(pdf_path: Path, root: Path, cfg: dict, logo_bytes,
+                dry_run: bool) -> dict:
     r = {"path": pdf_path, "status": "ok", "pages": 0, "msg": ""}
     try:
         reader = PdfReader(str(pdf_path))
@@ -363,6 +378,9 @@ def process_one(pdf_path: Path, root: Path, cover: PdfReader, dry_run: bool) -> 
 
         # Archive original
         _copy_to(pdf_path, root, ARCHIVE_DIR)
+
+        # Build cover with this file's name embedded
+        cover = build_cover_page(cfg, logo_bytes, filename=pdf_path.name)
 
         # Write new PDF (cover + original pages)
         writer = PdfWriter()
@@ -401,7 +419,7 @@ def process_one(pdf_path: Path, root: Path, cover: PdfReader, dry_run: bool) -> 
     return r
 
 
-def run_batch_processing(pdfs: list, root: Path, cover: PdfReader,
+def run_batch_processing(pdfs: list, root: Path, cfg: dict, logo_bytes,
                          dry_run: bool) -> dict:
     totals  = {"ok": 0, "encrypted": 0, "failed": 0,
                "enc_files": [], "fail_files": []}
@@ -422,7 +440,7 @@ def run_batch_processing(pdfs: list, root: Path, cover: PdfReader,
         for b_num, batch in enumerate(batches, 1):
             b_ok = b_enc = b_fail = 0
             for pdf in batch:
-                res = process_one(pdf, root, cover, dry_run)
+                res = process_one(pdf, root, cfg, logo_bytes, dry_run)
                 s   = res["status"]
                 totals[s if s in totals else "failed"] += 1
                 if s == "ok":
@@ -466,7 +484,7 @@ def collect_archived_pdfs(root: Path) -> list:
 
 
 def replace_one(orig_path: Path, main_path: Path,
-                cover: PdfReader, dry_run: bool) -> dict:
+                cfg: dict, logo_bytes, dry_run: bool) -> dict:
     """
     Rebuild main_path from the clean orig_path with the updated cover page.
     Uses the archived original so there is never any risk of double-stacking.
@@ -481,6 +499,7 @@ def replace_one(orig_path: Path, main_path: Path,
             r["msg"] = f"Would replace cover on {r['pages']}-page document"
             return r
 
+        cover = build_cover_page(cfg, logo_bytes, filename=main_path.name)
         writer = PdfWriter()
         writer.add_page(cover.pages[0])
         for page in reader.pages:
@@ -499,7 +518,7 @@ def replace_one(orig_path: Path, main_path: Path,
     return r
 
 
-def run_replace_processing(pairs: list, cover: PdfReader,
+def run_replace_processing(pairs: list, cfg: dict, logo_bytes,
                            dry_run: bool) -> dict:
     """Batch-replace covers using archived originals as the source."""
     totals  = {"ok": 0, "failed": 0, "fail_files": []}
@@ -520,7 +539,7 @@ def run_replace_processing(pairs: list, cover: PdfReader,
         for b_num, batch in enumerate(batches, 1):
             b_ok = b_fail = 0
             for orig, main in batch:
-                res = replace_one(orig, main, cover, dry_run)
+                res = replace_one(orig, main, cfg, logo_bytes, dry_run)
                 if res["status"] == "ok":
                     totals["ok"] += 1; b_ok += 1
                 else:
@@ -747,11 +766,8 @@ def main():
             mode = "Dry Run" if dry_run else "Full Run"
             console.print(f"  [bold #000000]Starting {mode}…[/bold #000000]\n")
 
-            with console.status("[dim]Building cover page…[/dim]", spinner="dots"):
-                cover = build_cover_page(cfg, logo_bytes)
-
             start   = time.time()
-            totals  = run_batch_processing(pdfs, root, cover, dry_run)
+            totals  = run_batch_processing(pdfs, root, cfg, logo_bytes, dry_run)
             elapsed = time.time() - start
 
             print_summary(totals, root, dry_run, elapsed)
@@ -780,13 +796,10 @@ def main():
                 f"only the cover page will change.\n"
             )
 
-            with console.status("[dim]Building new cover page…[/dim]", spinner="dots"):
-                cover = build_cover_page(cfg, logo_bytes)
-
             # Dry run preview
             console.print("  [bold #000000]Starting Dry Run…[/bold #000000]\n")
             start  = time.time()
-            totals = run_replace_processing(pairs, cover, dry_run=True)
+            totals = run_replace_processing(pairs, cfg, logo_bytes, dry_run=True)
             elapsed = time.time() - start
 
             console.print()
@@ -813,7 +826,7 @@ def main():
             # Live run
             console.print("\n  [bold #000000]Replacing covers…[/bold #000000]\n")
             start   = time.time()
-            totals  = run_replace_processing(pairs, cover, dry_run=False)
+            totals  = run_replace_processing(pairs, cfg, logo_bytes, dry_run=False)
             elapsed = time.time() - start
 
             console.print()
