@@ -66,7 +66,7 @@ _ensure_deps()
 # STEP 1 — Imports
 # ═══════════════════════════════════════════════════════════════════════════════
 
-import io, shutil, time, textwrap
+import io, re, shlex, shutil, time, textwrap
 from pathlib import Path
 
 import requests
@@ -97,8 +97,23 @@ from rich.rule import Rule
 
 DEFAULT_HEADER_COLOR = "#000000"
 DEFAULT_TEXT_COLOR   = "#000000"
+DEFAULT_LOGO_COLOR   = "#FFFFFF"   # blank string = keep SVG's native colors
 WHITE      = (1.0, 1.0, 1.0)
 LIGHT_BG   = (0.95, 0.97, 0.99)
+
+
+def normalize_path_input(raw: str) -> str:
+    """Strip whitespace and unescape shell-style paths (\\ escapes, quotes)."""
+    raw = raw.strip()
+    if not raw:
+        return raw
+    try:
+        tokens = shlex.split(raw, posix=True)
+        if tokens:
+            return tokens[0]
+    except ValueError:
+        pass
+    return raw
 
 
 def hex_to_rgb(hex_str: str) -> tuple:
@@ -156,24 +171,52 @@ def load_logo_bytes(logo_url: str) -> bytes | None:
     return None
 
 
+def _local_tag(el) -> str:
+    """Return element's local tag name, or '' for comments / PIs / non-elements."""
+    tag = el.tag
+    if not isinstance(tag, str):
+        return ""
+    return tag.split("}", 1)[-1] if "}" in tag else tag
+
+
 def svg_to_drawing(svg_bytes: bytes, max_w: float, max_h: float,
                    fill_color: str | None = None):
     """
     Parse SVG → scaled reportlab Drawing, or None on failure.
-    If fill_color is given (e.g. 'white'), all shape elements are recoloured
-    before rendering — useful for placing dark logos on coloured backgrounds.
+    If fill_color is given (e.g. 'white' or '#FFFFFF'), all shape elements are
+    recoloured before rendering — useful for placing dark logos on coloured
+    backgrounds. Pass None / empty string to keep the SVG's native colours.
     """
     try:
         tree = ET.fromstring(svg_bytes)
 
         if fill_color:
+            # <style> CSS rules win over the fill="..." attribute we set below,
+            # so strip them before recoloring.
+            for el in list(tree.iter()):
+                if _local_tag(el) == "style":
+                    parent = el.getparent()
+                    if parent is not None:
+                        parent.remove(el)
+
             SHAPE_TAGS = {"path", "polygon", "polyline", "rect",
                           "circle", "ellipse", "line", "g"}
             for el in tree.iter():
-                tag = el.tag.split("}")[-1] if "}" in el.tag else el.tag
-                if tag in SHAPE_TAGS:
-                    el.set("fill", fill_color)
-                    el.attrib.pop("stroke", None)
+                if _local_tag(el) not in SHAPE_TAGS:
+                    continue
+                el.set("fill", fill_color)
+                el.attrib.pop("stroke", None)
+                el.attrib.pop("class", None)
+                # Inline style also outranks the fill attribute — drop any
+                # fill/stroke declarations from it.
+                if "style" in el.attrib:
+                    style = re.sub(r"(?i)\b(fill|stroke)\s*:\s*[^;]+;?",
+                                   "", el.attrib["style"])
+                    style = style.strip().strip(";").strip()
+                    if style:
+                        el.set("style", style)
+                    else:
+                        el.attrib.pop("style", None)
 
         renderer = SvgRenderer("")
         drawing  = renderer.render(tree)
@@ -184,7 +227,8 @@ def svg_to_drawing(svg_bytes: bytes, max_w: float, max_h: float,
         drawing.height *= scale
         drawing.transform = (scale, 0, 0, scale, 0, 0)
         return drawing
-    except Exception:
+    except Exception as exc:
+        console.print(f"  [yellow]⚠ Logo render failed: {exc}[/yellow]")
         return None
 
 
@@ -213,9 +257,12 @@ def build_cover_page(cfg: dict, logo_bytes, filename: str = "") -> PdfReader:
     c.setFillColorRGB(*header_rgb)
     c.rect(0, H - banner_h, W, banner_h, stroke=0, fill=1)
 
-    # Logo — recoloured white, right-aligned directly on blue banner
+    # Logo — recoloured per cfg["logo_color"] (blank = keep native colors)
     if logo_bytes:
-        drawing = svg_to_drawing(logo_bytes, 200, 70, fill_color="white")
+        drawing = svg_to_drawing(
+            logo_bytes, 200, 70,
+            fill_color=(cfg.get("logo_color") or None),
+        )
         if drawing:
             lx = W - margin_l - drawing.width
             ly = H - banner_h + (banner_h - drawing.height) / 2
@@ -586,6 +633,11 @@ def print_config_table(cfg: dict):
     t.add_row("Email",         cfg["contact_email"])
     t.add_row("Phone",         cfg["contact_phone"])
     t.add_row("Logo",          cfg["logo_url"] or "[dim]local logo.svg (if present)[/dim]")
+    if cfg.get("logo_color"):
+        t.add_row("Logo color",
+                  f"[{cfg['logo_color']}]██[/{cfg['logo_color']}] {cfg['logo_color']}")
+    else:
+        t.add_row("Logo color", "[dim]native (no recolor)[/dim]")
     t.add_row("Header color", f"[{cfg['header_color']}]██[/{cfg['header_color']}] {cfg['header_color']}")
     t.add_row("Text color",   f"[{cfg['text_color']}]██[/{cfg['text_color']}] {cfg['text_color']}")
     console.print(t)
@@ -664,6 +716,10 @@ def configure_settings(cfg: dict) -> dict:
         "  Logo SVG URL [dim](blank = use logo.svg from script folder)[/dim]",
         default=cfg["logo_url"],
     )
+    cfg["logo_color"]    = Prompt.ask(
+        "  Logo color (hex) [dim](blank = keep SVG's native colors)[/dim]",
+        default=cfg["logo_color"],
+    )
     cfg["header_color"]  = Prompt.ask("  Header color (hex)",   default=cfg["header_color"])
     cfg["text_color"]    = Prompt.ask("  Text color (hex)",     default=cfg["text_color"])
     console.print()
@@ -678,7 +734,7 @@ def main():
     print_banner()
 
     raw = Prompt.ask("  [bold]Path to PDF folder[/bold]", default=str(Path.cwd()))
-    root = Path(raw.strip()).expanduser().resolve()
+    root = Path(normalize_path_input(raw)).expanduser().resolve()
     if not root.is_dir():
         console.print(f"\n[red]✗ Not a valid directory:[/red] {root}\n")
         sys.exit(1)
@@ -689,6 +745,7 @@ def main():
         "contact_email": "accessibility@state.gov",
         "contact_phone": "(555) 555-5555",
         "logo_url":      "",
+        "logo_color":    DEFAULT_LOGO_COLOR,
         "header_color":  DEFAULT_HEADER_COLOR,
         "text_color":    DEFAULT_TEXT_COLOR,
     }
@@ -735,7 +792,7 @@ def main():
         elif choice == "5":
             raw = Prompt.ask("  [bold]New path to PDF folder[/bold]",
                              default=str(root))
-            new_root = Path(raw.strip()).expanduser().resolve()
+            new_root = Path(normalize_path_input(raw)).expanduser().resolve()
             if new_root.is_dir():
                 root = new_root
                 console.print(f"  [green]✓ Switched to:[/green] [cyan]{root}[/cyan]\n")

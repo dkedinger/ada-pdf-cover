@@ -29,3 +29,6 @@ _encrypted_pdfs/
 _failed_pdfs/
 accessibility_log*.txt
 replace_covers_log.txt
+
+# Assets
+logo.svg
