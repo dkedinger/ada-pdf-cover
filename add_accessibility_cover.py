@@ -306,7 +306,7 @@ def build_cover_page(cfg: dict, logo_bytes, filename: str = "") -> PdfReader:
             display = display[:77] + "..."
         c.setFillColorRGB(*text_rgb)
         c.setFont("Helvetica-Bold", 10)
-        label = "Document: "
+        label = "Filename: "
         c.drawString(margin_l, y, label)
         label_w = c.stringWidth(label, "Helvetica-Bold", 10)
         c.setFont("Helvetica", 10)
@@ -336,36 +336,63 @@ def build_cover_page(cfg: dict, logo_bytes, filename: str = "") -> PdfReader:
     )
 
     # ── Section 2: Contact ────────────────────────────────────────────────────
-    y = section_head("Request an Accessible Format", y)
+    # Each row is included only if its underlying field is filled.
+    rows = []
+    if cfg.get("contact_name", "").strip():
+        rows.append(("Contact", cfg["contact_name"].strip()))
+    if cfg.get("contact_email", "").strip():
+        rows.append(("Email", cfg["contact_email"].strip()))
+    if cfg.get("contact_phone", "").strip():
+        rows.append(("Phone", cfg["contact_phone"].strip()))
+    if cfg.get("mailing_address", "").strip():
+        addr_lines = [
+            ln.strip() for ln in cfg["mailing_address"].split("|") if ln.strip()
+        ]
+        if addr_lines:
+            rows.append(("Mailing Address", addr_lines))
+    if cfg.get("online_request_url", "").strip():
+        rows.append(("Online Request", cfg["online_request_url"].strip()))
+    if cfg.get("contact_phone", "").strip():
+        rows.append(("TTY / TDD", "Please use your preferred relay service"))
 
-    rows = [
-        ("Contact",  cfg["contact_name"]),
-        ("Email",    cfg["contact_email"]),
-        ("Phone",    cfg["contact_phone"]),
-        ("TTY / TDD", "Please use your preferred relay service"),
-    ]
-    row_h  = 22
-    pad    = 14
-    box_h  = len(rows) * row_h + pad * 2
-    box_y  = y - box_h
+    if rows:
+        y = section_head("Request an Accessible Format", y)
 
-    c.setFillColorRGB(*LIGHT_BG)
-    c.roundRect(margin_l, box_y, text_w, box_h, radius=6, stroke=0, fill=1)
+        row_h  = 22
+        line_h = 14
+        pad    = 14
 
-    # Thin left accent bar
-    c.setFillColorRGB(*header_rgb)
-    c.rect(margin_l, box_y, 3, box_h, stroke=0, fill=1)
+        def _row_height(val):
+            return row_h + line_h * (len(val) - 1) if isinstance(val, list) else row_h
 
-    cy = y - pad - 8
-    for label, val in rows:
-        c.setFont("Helvetica-Bold", 10)
-        c.setFillColorRGB(*text_rgb)
-        c.drawString(margin_l + 14, cy, f"{label}:")
-        c.setFont("Helvetica", 10)
-        c.drawString(margin_l + 100, cy, val)
-        cy -= row_h
+        box_h = sum(_row_height(v) for _, v in rows) + pad * 2
+        box_y = y - box_h
 
-    y = box_y - 10
+        c.setFillColorRGB(*LIGHT_BG)
+        c.roundRect(margin_l, box_y, text_w, box_h, radius=6, stroke=0, fill=1)
+
+        # Thin left accent bar
+        c.setFillColorRGB(*header_rgb)
+        c.rect(margin_l, box_y, 3, box_h, stroke=0, fill=1)
+
+        value_x = margin_l + 130
+        cy = y - pad - 8
+        for label, val in rows:
+            c.setFont("Helvetica-Bold", 10)
+            c.setFillColorRGB(*text_rgb)
+            c.drawString(margin_l + 14, cy, f"{label}:")
+            c.setFont("Helvetica", 10)
+            if isinstance(val, list):
+                line_y = cy
+                for line in val:
+                    c.drawString(value_x, line_y, line)
+                    line_y -= line_h
+                cy -= row_h + line_h * (len(val) - 1)
+            else:
+                c.drawString(value_x, cy, val)
+                cy -= row_h
+
+        y = box_y - 10
 
     # ── Footer note ───────────────────────────────────────────────────────────
     c.setFont("Helvetica", 7.5)
@@ -629,9 +656,17 @@ def print_config_table(cfg: dict):
     t.add_column("", style="bold #000000", width=18)
     t.add_column("", style="white")
     t.add_row("Organisation",  cfg["org_name"])
-    t.add_row("Contact",       cfg["contact_name"])
-    t.add_row("Email",         cfg["contact_email"])
-    t.add_row("Phone",         cfg["contact_phone"])
+    t.add_row("Contact",       cfg["contact_name"] or "[dim]—[/dim]")
+    t.add_row("Email",         cfg["contact_email"] or "[dim]—[/dim]")
+    t.add_row("Phone",         cfg["contact_phone"] or "[dim]—[/dim]")
+    addr = cfg.get("mailing_address", "").strip()
+    if addr:
+        addr_display = "\n".join(ln.strip() for ln in addr.split("|") if ln.strip())
+        t.add_row("Mailing address", addr_display)
+    else:
+        t.add_row("Mailing address", "[dim]—[/dim]")
+    t.add_row("Online request",
+              cfg.get("online_request_url") or "[dim]—[/dim]")
     t.add_row("Logo",          cfg["logo_url"] or "[dim]local logo.svg (if present)[/dim]")
     if cfg.get("logo_color"):
         t.add_row("Logo color",
@@ -709,9 +744,17 @@ def configure_settings(cfg: dict) -> dict:
         "[dim]Press Enter to keep the current value.[/dim]\n"
     )
     cfg["org_name"]      = Prompt.ask("  Organisation name",   default=cfg["org_name"])
-    cfg["contact_name"]  = Prompt.ask("  Contact name / dept", default=cfg["contact_name"])
-    cfg["contact_email"] = Prompt.ask("  Contact email",        default=cfg["contact_email"])
-    cfg["contact_phone"] = Prompt.ask("  Contact phone",        default=cfg["contact_phone"])
+    cfg["contact_name"]  = Prompt.ask("  Contact name / dept [dim](blank to omit)[/dim]", default=cfg["contact_name"])
+    cfg["contact_email"] = Prompt.ask("  Contact email        [dim](blank to omit)[/dim]", default=cfg["contact_email"])
+    cfg["contact_phone"] = Prompt.ask("  Contact phone        [dim](blank to omit)[/dim]", default=cfg["contact_phone"])
+    cfg["mailing_address"] = Prompt.ask(
+        "  Mailing address     [dim](use | to separate lines, blank to omit)[/dim]",
+        default=cfg.get("mailing_address", ""),
+    )
+    cfg["online_request_url"] = Prompt.ask(
+        "  Online request URL  [dim](blank to omit)[/dim]",
+        default=cfg.get("online_request_url", ""),
+    )
     cfg["logo_url"]      = Prompt.ask(
         "  Logo SVG URL [dim](blank = use logo.svg from script folder)[/dim]",
         default=cfg["logo_url"],
@@ -740,14 +783,16 @@ def main():
         sys.exit(1)
 
     cfg = {
-        "org_name":      "XYZ State Agency",
-        "contact_name":  "Accessibility Coordinator",
-        "contact_email": "accessibility@state.gov",
-        "contact_phone": "(555) 555-5555",
-        "logo_url":      "",
-        "logo_color":    DEFAULT_LOGO_COLOR,
-        "header_color":  DEFAULT_HEADER_COLOR,
-        "text_color":    DEFAULT_TEXT_COLOR,
+        "org_name":          "XYZ State Agency",
+        "contact_name":      "Accessibility Coordinator",
+        "contact_email":     "accessibility@state.gov",
+        "contact_phone":     "(555) 555-5555",
+        "mailing_address":   "",
+        "online_request_url": "",
+        "logo_url":          "",
+        "logo_color":        DEFAULT_LOGO_COLOR,
+        "header_color":      DEFAULT_HEADER_COLOR,
+        "text_color":        DEFAULT_TEXT_COLOR,
     }
 
     console.print()
