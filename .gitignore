@@ -32,3 +32,6 @@ replace_covers_log.txt
 
 # Assets
 logo.svg
+
+# PDFs to modify (folder and all subfolders)
+pdfs-to-modify/
